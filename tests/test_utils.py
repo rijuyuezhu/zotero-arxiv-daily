@@ -5,6 +5,7 @@ import tarfile
 import io
 
 import pytest
+from omegaconf import open_dict
 
 from zotero_arxiv_daily.utils import glob_match, send_email, extract_tex_code_from_tar, _bm25_pick
 from tests.canned_responses import make_stub_smtp
@@ -184,6 +185,20 @@ def test_send_email_falls_back_to_plain(config, monkeypatch):
     monkeypatch.setattr(smtplib, "SMTP_SSL", StubSMTP_SSL_Fails)
     send_email(config, "<html>plain</html>")
     assert len(sent) == 1
+
+
+def test_send_email_uses_target_date_in_subject(config, monkeypatch):
+    sent = []
+    monkeypatch.setattr(smtplib, "SMTP", make_stub_smtp(sent))
+
+    with open_dict(config.source):
+        config.source.target_date = "2026-04-08"
+
+    send_email(config, "<html>dated</html>")
+
+    assert len(sent) == 1
+    _, _, body = sent[0]
+    assert "Subject: =?utf-8?q?Daily_arXiv_2026/04/08?=" in body
 
 
 # ---------------------------------------------------------------------------
