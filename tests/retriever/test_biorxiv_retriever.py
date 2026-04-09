@@ -56,3 +56,49 @@ def test_biorxiv_requires_category(config):
         config.source.biorxiv = {"category": None}
     with pytest.raises(ValueError, match="category must be specified"):
         BiorxivRetriever(config)
+
+
+def test_biorxiv_retrieve_uses_target_date(config, monkeypatch):
+    import requests
+    from types import SimpleNamespace
+
+    payload = {
+        "messages": [{"status": "ok"}],
+        "collection": [
+            {
+                "doi": "10.1101/2026.04.07.000001",
+                "title": "Older bio paper",
+                "authors": "Smith, J.",
+                "abstract": "Abstract.",
+                "date": "2026-04-07",
+                "category": "bioinformatics",
+                "version": "1",
+            },
+            {
+                "doi": "10.1101/2026.04.08.000001",
+                "title": "Target bio paper",
+                "authors": "Doe, A.",
+                "abstract": "Abstract.",
+                "date": "2026-04-08",
+                "category": "bioinformatics",
+                "version": "1",
+            },
+        ],
+    }
+
+    def _patched(url, **kw):
+        resp = SimpleNamespace(status_code=200, raise_for_status=lambda: None)
+        resp.json = lambda: payload
+        return resp
+
+    monkeypatch.setattr(requests, "get", _patched)
+
+    with open_dict(config.source):
+        config.source.biorxiv = {"category": ["bioinformatics"]}
+        config.source.target_date = "2026-04-08"
+
+    retriever = BiorxivRetriever(config)
+    papers = retriever.retrieve_papers()
+
+    assert len(papers) == 1
+    assert papers[0].title == "Target bio paper"

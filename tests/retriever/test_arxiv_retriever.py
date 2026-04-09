@@ -4,6 +4,7 @@ import time
 from types import SimpleNamespace
 
 import feedparser
+from omegaconf import open_dict
 
 from zotero_arxiv_daily.retriever.arxiv_retriever import ArxivRetriever, _run_with_hard_timeout
 import zotero_arxiv_daily.retriever.arxiv_retriever as arxiv_retriever
@@ -88,3 +89,26 @@ def test_run_with_hard_timeout_returns_none_on_failure(monkeypatch):
     )
     assert result is None
     assert "boom" in warnings[0]
+def test_arxiv_retriever_uses_date_override_query(config, monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def results(self, search):
+            captured["query"] = search.query
+            captured["max_results"] = search.max_results
+            return iter([])
+
+    monkeypatch.setattr(arxiv_retriever.arxiv, "Client", FakeClient)
+    monkeypatch.setattr(arxiv_retriever.feedparser, "parse", lambda *_: None)
+
+    with open_dict(config.source):
+        config.source.target_date = "2026-04-08"
+
+    retriever = ArxivRetriever(config)
+    papers = retriever.retrieve_papers()
+
+    assert papers == []
+    assert "submittedDate:[202604080000 TO 202604082359]" in str(captured["query"])

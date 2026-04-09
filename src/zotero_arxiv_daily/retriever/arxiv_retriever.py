@@ -114,7 +114,22 @@ class ArxivRetriever(BaseRetriever):
 
     def _retrieve_raw_papers(self) -> list[ArxivResult]:
         client = arxiv.Client(num_retries=10, delay_seconds=10)
-        query = '+'.join(self.config.source.arxiv.category)
+        categories = list(self.config.source.arxiv.category)
+        target_date = self.config.source.get("target_date")
+        if target_date:
+            date_token = target_date.replace("-", "")
+            category_query = " OR ".join(f"cat:{category}" for category in categories)
+            search = arxiv.Search(
+                query=f"({category_query}) AND submittedDate:[{date_token}0000 TO {date_token}2359]",
+                max_results=2000,
+                sort_by=arxiv.SortCriterion.SubmittedDate,
+            )
+            raw_papers = list(client.results(search))
+            if self.config.executor.debug:
+                raw_papers = raw_papers[:10]
+            return raw_papers
+
+        query = '+'.join(categories)
         include_cross_list = self.config.source.arxiv.get("include_cross_list", False)
         # Get the latest paper from arxiv rss feed
         feed = feedparser.parse(f"https://rss.arxiv.org/atom/{query}")

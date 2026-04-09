@@ -209,6 +209,10 @@ def test_run_end_to_end(config, monkeypatch):
     assert "text/html" in email_body
 
 
+def test_target_date_defaults_to_none(config):
+    assert config.source.target_date is None
+
+
 def test_run_no_papers_send_empty_false(config, monkeypatch):
     """When no papers are found and send_empty=false, no email is sent."""
     import smtplib
