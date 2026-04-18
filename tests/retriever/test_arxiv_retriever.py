@@ -1,5 +1,6 @@
 """Tests for ArxivRetriever."""
 
+from datetime import datetime, timezone
 import time
 from types import SimpleNamespace
 
@@ -89,8 +90,55 @@ def test_run_with_hard_timeout_returns_none_on_failure(monkeypatch):
     )
     assert result is None
     assert "boom" in warnings[0]
+
+
+def test_target_date_submission_window_matches_announcement_schedule():
+    assert arxiv_retriever._target_date_submission_window("2026-04-17") == (
+        datetime(2026, 4, 15, 18, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 16, 18, 0, tzinfo=timezone.utc),
+    )
+
+    assert arxiv_retriever._target_date_submission_window("2026-04-21") == (
+        datetime(2026, 4, 17, 18, 0, tzinfo=timezone.utc),
+        datetime(2026, 4, 20, 18, 0, tzinfo=timezone.utc),
+    )
+
+    assert arxiv_retriever._target_date_submission_window("2026-04-18") is None
+
+
 def test_arxiv_retriever_uses_date_override_query(config, monkeypatch):
     captured: dict[str, object] = {}
+    monkeypatch.setattr("zotero_arxiv_daily.retriever.base.sleep", lambda _: None)
+
+    fake_results = [
+        SimpleNamespace(
+            title="Included",
+            authors=[SimpleNamespace(name="Test Author")],
+            summary="Test abstract",
+            pdf_url="https://arxiv.org/pdf/2604.00001v1",
+            entry_id="https://arxiv.org/abs/2604.00001v1",
+            source_url=lambda: "https://arxiv.org/e-print/2604.00001v1",
+            published=datetime(2026, 4, 16, 17, 59, 59, tzinfo=timezone.utc),
+        ),
+        SimpleNamespace(
+            title="Too Early",
+            authors=[SimpleNamespace(name="Test Author")],
+            summary="Test abstract",
+            pdf_url="https://arxiv.org/pdf/2604.00002v1",
+            entry_id="https://arxiv.org/abs/2604.00002v1",
+            source_url=lambda: "https://arxiv.org/e-print/2604.00002v1",
+            published=datetime(2026, 4, 15, 17, 59, 59, tzinfo=timezone.utc),
+        ),
+        SimpleNamespace(
+            title="Too Late",
+            authors=[SimpleNamespace(name="Test Author")],
+            summary="Test abstract",
+            pdf_url="https://arxiv.org/pdf/2604.00003v1",
+            entry_id="https://arxiv.org/abs/2604.00003v1",
+            source_url=lambda: "https://arxiv.org/e-print/2604.00003v1",
+            published=datetime(2026, 4, 16, 18, 0, 0, tzinfo=timezone.utc),
+        ),
+    ]
 
     class FakeClient:
         def __init__(self, **kw):
@@ -99,16 +147,19 @@ def test_arxiv_retriever_uses_date_override_query(config, monkeypatch):
         def results(self, search):
             captured["query"] = search.query
             captured["max_results"] = search.max_results
-            return iter([])
+            return iter(fake_results)
 
     monkeypatch.setattr(arxiv_retriever.arxiv, "Client", FakeClient)
     monkeypatch.setattr(arxiv_retriever.feedparser, "parse", lambda *_: None)
+    monkeypatch.setattr(arxiv_retriever, "extract_text_from_html", lambda paper: None)
+    monkeypatch.setattr(arxiv_retriever, "extract_text_from_pdf", lambda paper: None)
+    monkeypatch.setattr(arxiv_retriever, "extract_text_from_tar", lambda paper: None)
 
     with open_dict(config.source):
-        config.source.target_date = "2026-04-08"
+        config.source.target_date = "2026-04-17"
 
     retriever = ArxivRetriever(config)
     papers = retriever.retrieve_papers()
 
-    assert papers == []
-    assert "submittedDate:[202604080000 TO 202604082359]" in str(captured["query"])
+    assert [paper.title for paper in papers] == ["Included"]
+    assert "submittedDate:[202604151800 TO 202604161800]" in str(captured["query"])

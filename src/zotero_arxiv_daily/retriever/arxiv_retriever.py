@@ -3,6 +3,7 @@ import arxiv
 from arxiv import Result as ArxivResult
 from ..protocol import Paper
 from ..utils import extract_markdown_from_pdf, extract_tex_code_from_tar
+from datetime import date, datetime, time, timedelta, timezone
 from tempfile import TemporaryDirectory
 import feedparser
 from tqdm import tqdm
@@ -10,6 +11,7 @@ import multiprocessing
 import os
 from queue import Empty
 from typing import Any, Callable, TypeVar
+from zoneinfo import ZoneInfo
 from loguru import logger
 import requests
 
@@ -18,6 +20,8 @@ T = TypeVar("T")
 DOWNLOAD_TIMEOUT = (10, 60)
 PDF_EXTRACT_TIMEOUT = 180
 TAR_EXTRACT_TIMEOUT = 180
+ARXIV_ANNOUNCEMENT_TZ = ZoneInfo("America/New_York")
+UTC = timezone.utc
 
 
 def _download_file(url: str, path: str) -> None:
@@ -105,6 +109,40 @@ def _extract_text_from_tar_worker(source_url: str, paper_id: str, paper_title: s
         return file_contents["all"]
 
 
+def _target_date_submission_window(target_date: str) -> tuple[datetime, datetime] | None:
+    batch_date = date.fromisoformat(target_date)
+    weekday = batch_date.weekday()
+
+    if weekday == 0:
+        start_date = batch_date - timedelta(days=4)
+        end_date = batch_date - timedelta(days=3)
+    elif weekday == 1:
+        start_date = batch_date - timedelta(days=4)
+        end_date = batch_date - timedelta(days=1)
+    elif weekday in {2, 3, 4}:
+        start_date = batch_date - timedelta(days=2)
+        end_date = batch_date - timedelta(days=1)
+    else:
+        return None
+
+    start = datetime.combine(start_date, time(hour=14), tzinfo=ARXIV_ANNOUNCEMENT_TZ).astimezone(UTC)
+    end = datetime.combine(end_date, time(hour=14), tzinfo=ARXIV_ANNOUNCEMENT_TZ).astimezone(UTC)
+    return start, end
+
+
+def _query_timestamp(value: datetime) -> str:
+    return value.astimezone(UTC).strftime("%Y%m%d%H%M")
+
+
+def _published_in_submission_window(paper: ArxivResult, start: datetime, end: datetime) -> bool:
+    published = paper.published
+    if published.tzinfo is None:
+        published = published.replace(tzinfo=UTC)
+    else:
+        published = published.astimezone(UTC)
+    return start <= published < end
+
+
 @register_retriever("arxiv")
 class ArxivRetriever(BaseRetriever):
     def __init__(self, config):
@@ -117,14 +155,19 @@ class ArxivRetriever(BaseRetriever):
         categories = list(self.config.source.arxiv.category)
         target_date = self.config.source.get("target_date")
         if target_date:
-            date_token = target_date.replace("-", "")
+            submission_window = _target_date_submission_window(target_date)
+            if submission_window is None:
+                logger.info(f"No arXiv announcement batch exists for {target_date}")
+                return []
+
+            start, end = submission_window
             category_query = " OR ".join(f"cat:{category}" for category in categories)
             search = arxiv.Search(
-                query=f"({category_query}) AND submittedDate:[{date_token}0000 TO {date_token}2359]",
+                query=f"({category_query}) AND submittedDate:[{_query_timestamp(start)} TO {_query_timestamp(end)}]",
                 max_results=2000,
                 sort_by=arxiv.SortCriterion.SubmittedDate,
             )
-            raw_papers = list(client.results(search))
+            raw_papers = [paper for paper in client.results(search) if _published_in_submission_window(paper, start, end)]
             if self.config.executor.debug:
                 raw_papers = raw_papers[:10]
             return raw_papers
